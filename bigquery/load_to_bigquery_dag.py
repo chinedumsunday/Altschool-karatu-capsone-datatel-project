@@ -3,9 +3,13 @@ import pandas
 from sqlalchemy import create_engine
 import os
 
+pg_user = os.environ['DATATEL_PG_USER']
+pg_pass = os.environ['DATATEL_PG_PASSWORD']
+pg_db = os.environ['DATATEL_PG_DB']
+
 tables = ["stg_customers", "agg_user_revenue", "agg_user_usage", "agg_arpu", "agg_session_distribution"]
 credentials = "/opt/airflow/credentials/datatel.json"
-engine = create_engine("postgresql+psycopg2://blocknedu:blocknedu@datatel_postgres:5432/datatel")
+engine = create_engine(f"postgresql+psycopg2://{pg_user}:{pg_pass}@datatel_postgres:5432/{pg_db}")
 
 client = bigquery.Client.from_service_account_json(credentials)
 job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
