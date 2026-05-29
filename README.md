@@ -2,7 +2,7 @@
 
 AltSchool of Data Engineering Karatu 2025 — Third Semester Capstone Project.
 
-A 5-stage data pipeline orchestrated in Apache Airflow that ingests telecom data from PostgreSQL source tables, runs quality checks, builds an incremental staging layer with affected-customer aggregate recomputation, and merges into a BigQuery warehouse table.
+A 5-stage data pipeline orchestrated in Apache Airflow that ingests telecom data from PostgreSQL source tables, runs quality checks, builds an incremental staging layer with affected-customer aggregate recomputation, and merges into a BigQuery warehouse table. The entire local stack runs in Docker — no manual installation of Airflow or Postgres required.
 
 ---
 
@@ -20,6 +20,27 @@ A 5-stage data pipeline orchestrated in Apache Airflow that ingests telecom data
 | 4. Warehouse | Push intermediates to BigQuery; MERGE into `dw_user_analytics` | BigQuery |
 | 5. Orchestration | Single Airflow DAG, daily schedule, SQL-first, idempotent, parametrized | Airflow |
 
+All services other than BigQuery run locally in Docker containers via `docker compose`.
+
+## Stack Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│ Docker Compose Stack (local)                │
+│  ├─ airflow-scheduler                       │
+│  ├─ airflow-apiserver                       │
+│  ├─ airflow-worker      (CeleryExecutor)    │
+│  ├─ airflow-dag-processor                   │
+│  ├─ airflow-postgres    (Airflow metadata)  │
+│  ├─ datatel-postgres    (source + staging)  │
+│  └─ redis               (Celery broker)     │
+└─────────────────────────────────────────────┘
+                  │
+                  ▼
+           BigQuery (cloud)
+        datatel_warehouse dataset
+```
+
 ## Key Design Decisions (full justifications in WRITEUP.md)
 
 - **Three different staging strategies**, chosen per-table based on the kind of timestamp the source carries: incremental date-window for `stg_billing` and `stg_sessions` (activity timestamps), idempotent full-refresh with dedup for `stg_customers` (only a registration timestamp, see discussion Q3).
@@ -31,6 +52,8 @@ A 5-stage data pipeline orchestrated in Apache Airflow that ingests telecom data
 - **Idempotency everywhere.** `CREATE IF NOT EXISTS` for table existence, `TRUNCATE + INSERT` or `DELETE-then-INSERT` for data loads, `MERGE` for upsert. Running the same window twice produces identical results.
 
 - **Date window as overridable parameters** (`t_start` / `t_end`) so operators can reprocess specific historical days from the Airflow UI without modifying code.
+
+- **Credentials externalized to `.env`.** Database credentials are loaded from `.env` (gitignored) and referenced in `docker-compose.yaml` via `${VAR}` interpolation. In production this would be backed by a secrets manager (GCP Secret Manager, HashiCorp Vault).
 
 ## Repository Layout
 
@@ -55,17 +78,51 @@ A 5-stage data pipeline orchestrated in Apache Airflow that ingests telecom data
 
 ## How to Run Locally
 
+**Prerequisites:**
+
+- Docker Desktop (or Docker Engine + Compose plugin)
+- A GCP account with billing enabled (the BigQuery MERGE step requires DML, which is blocked on the free tier — see note below)
+- Python 3.13 — optional, only needed if regenerating the synthetic source data via `data_generator.py`
+
+**Steps:**
+
 1. Clone the repository.
-2. Place GCP service-account credentials at `credentials/datatel.json` (gitignored).
-3. Create `.env` with `FERNET_KEY` and `AIRFLOW_UID` (gitignored).
-4. Generate source data once: `python data_generator.py`, then load the CSVs into the `datatel` Postgres database via the `setup_source_tables.sql` script.
-5. Bring up the stack: `docker compose up -d`.
-6. In Airflow UI (`localhost:8080`), create a connection named `datatel_postgres` pointing at the data-Postgres container (host `datatel_postgres`, port `5432`).
-7. Trigger the DAG `datatel_pipeline`. Default params process a window from 2026-01-15 to 2026-01-16; override `t_start` / `t_end` to reprocess any historical day.
+
+2. Place a GCP service-account JSON key at `credentials/datatel.json` (path is gitignored). The service account needs BigQuery Data Editor + Job User roles.
+
+3. Create `.env` at the repo root (also gitignored) containing at minimum:
+   ```
+   AIRFLOW_UID=50000
+   FERNET_KEY=<generate via python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+   DATATEL_PG_USER=<choose>
+   DATATEL_PG_PASSWORD=<choose a strong value>
+   DATATEL_PG_DB=datatel
+   ```
+
+4. Generate source data once: `python data_generator.py`, then load the CSVs into the `datatel` Postgres database via `src/source/setup_source_tables.sql`.
+
+5. Bring up the entire stack with one command:
+   ```bash
+   docker compose up -d
+   ```
+   No manual installation of Airflow, Postgres, Redis, or any worker required — everything runs in containers.
+
+6. In Airflow UI (`localhost:8080`, login `airflow`/`airflow`), create a connection named `datatel_postgres` pointing at the data-Postgres container (host: `datatel_postgres`, port: `5432`, database/login/password matching your `.env`).
+
+7. Unpause and trigger the DAG `datatel_pipeline`. Default params process a window from `2026-01-15` to `2026-01-16`; override `t_start` / `t_end` from the Trigger dialog to reprocess any historical day.
+
+**Note on BigQuery billing:** the warehouse MERGE step is a DML statement, which BigQuery's free tier disallows. The project must have a billing account linked to run the MERGE (cost on this dataset size is negligible — well under a dollar per run). For environments without billing, a `CREATE OR REPLACE TABLE` fallback can be used at the cost of new-vs-returning customer handling (see WRITEUP.md Q4 for tradeoffs).
 
 ## Tech Stack
 
-PostgreSQL · Apache Airflow 3.2.1 · BigQuery · Docker Compose · Python 3.13 · SQL.
+| Layer | Technology |
+|---|---|
+| Orchestration | Apache Airflow 3.2.1 (CeleryExecutor) |
+| Source database | PostgreSQL 13 |
+| Warehouse | Google BigQuery (`europe-west1`) |
+| Containerization | Docker + Docker Compose |
+| Pipeline languages | Python 3.13, SQL |
+| Cloud platform | Google Cloud Platform |
 
 ---
 
