@@ -113,9 +113,9 @@ services:
     ports:
       - "5433:5432"
     environment:
-      POSTGRES_USER: blocknedu
-      POSTGRES_PASSWORD: blocknedu
-      POSTGRES_DB: datatel
+      POSTGRES_USER: ${DATATEL_PG_USER}
+      POSTGRES_PASSWORD: ${DATATEL_PG_PASSWORD}
+      POSTGRES_DB: ${DATATEL_PG_DB}
     volumes:
       - datatel-db-volume:/var/lib/postgresql/data
     healthcheck:
